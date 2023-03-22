@@ -1,0 +1,49 @@
+#!/bin/bash
+
+# rrdtool create XXX.rrd -s 60 DS:watts:GAUGE:300:0:U DS:volts:GAUGE:300:0:U RRA:AVERAGE:0.5:1m:2y
+
+set -e
+
+if [ "$#" -lt "2" ] || [ "$#" -gt "3" ]
+then
+	echo "Usage: $0 <shelly hostname/ip> <rrd file> [<password>]" 1>&2
+	exit 64 # EX_USAGE
+fi
+
+if [ "$#" -ge "3" ]
+then
+	json=$(curl -s --digest -u "admin:$3" "http://$1/rpc/Shelly.GetStatus")
+else
+	json=$(curl -s "http://$1/rpc/Shelly.GetStatus")
+fi
+
+last_minute_ts=$(jq '."switch:0".aenergy.minute_ts' <<< "$json")
+voltage=$(jq '."switch:0".voltage' <<< "$json")
+
+now_ts=$(jq '.sys.unixtime' <<< "$json")
+one_minute_ago_ts=$(( $now_ts - 60 ))
+two_minutes_ago_ts=$(( $now_ts - 120 ))
+
+# The Shelly firmware stops rotating the power consumption counters when no
+# current is flowing, so if the update timestamp is over two minutes old, then
+# no current has flowed in the past couple of minutes, if the timestamp was
+# updated between one and two minutes ago, then the latest counter is from one
+# minute ago and we record it, otherwise the second-last counter is the
+# previous minute and we record that.
+
+if [ "$two_minutes_ago_ts" -gt "$last_minute_ts" ]
+then
+	last_minute_mwh=0
+elif [ "$one_minute_ago_ts" -gt "$last_minute_ts" ]
+then
+	last_minute_mwh=$(jq '."switch:0".aenergy.by_minute[0]' <<< "$json")
+else
+	last_minute_mwh=$(jq '."switch:0".aenergy.by_minute[1]' <<< "$json")
+fi
+
+# Convert past minute mWh to Wh, then to W averaged over the minute
+last_minute_w=$(bc -l <<< "($last_minute_mwh / 1000) * 60")
+
+# echo $(date --date "@$now_ts") last_minute_w = $last_minute_w voltage = $voltage
+
+rrdtool update "$2" N:"$last_minute_w":"$voltage"
