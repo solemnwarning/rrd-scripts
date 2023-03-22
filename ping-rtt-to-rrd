@@ -1,0 +1,21 @@
+#!/bin/bash
+
+# rrdtool create XXX.rrd -s 60 DS:rtt:GAUGE:300:0:U RRA:AVERAGE:0.5:1m:6M RRA:AVERAGE:0.5:5m:2y
+
+set -e
+
+if [ "$#" -ne 2 ]
+then
+	echo "Usage: $0 <host> <rrd file>" 1>&2
+	exit 64 # EX_USAGE
+fi
+
+ping_out=$(ping -nv -W10 -c4 "$1" 2>&1)
+
+if [ "$?" -eq "0" ]
+then
+	avg_rtt=$(perl -e '$t = $c = 0; while(<>) { if(m/time=([0-9\.]+)\s*ms/) { $t += $1; ++$c; } } print $t / $c;' <<< "$ping_out")
+	rrdtool update "$2" N:"$avg_rtt"
+else
+	exit 68 # EX_NOHOST
+fi

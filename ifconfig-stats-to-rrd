@@ -1,0 +1,54 @@
+#!/bin/bash
+
+# rrdtool create XXX.rrd -s 60 DS:rx_packets:GAUGE:300:0:U DS:rx_bytes:GAUGE:300:0:U DS:tx_packets:GAUGE:300:0:U DS:tx_bytes:GAUGE:300:0:U RRA:AVERAGE:0.5:1m:6M
+
+set -e
+
+if [ "$#" -ne 2 ]
+then
+	echo "Usage: $0 <interface name> <rrd file>" 1>&2
+	exit 64 # EX_USAGE
+fi
+
+statfile="/var/run/$1.ifconfig-stats-to-rrd"
+
+ifconfig=$(ifconfig "$1")
+
+rx_packets=$(perl -ne '/RX/ && /packets ([0-9]+)/ && print $1' <<< "$ifconfig")
+rx_bytes=$(perl -ne '/RX/ && /bytes ([0-9]+)/ && print $1' <<< "$ifconfig")
+tx_packets=$(perl -ne '/TX/ && /packets ([0-9]+)/ && print $1' <<< "$ifconfig")
+tx_bytes=$(perl -ne '/TX/ && /bytes ([0-9]+)/ && print $1' <<< "$ifconfig")
+
+
+
+if [ -n "$rx_packets" ] && [ -n "$rx_bytes" ] && [ -n "$tx_packets" ] && [ -n "$tx_bytes" ]
+then
+	rx_packets_now="$rx_packets"
+	rx_bytes_now="$rx_bytes"
+	tx_packets_now="$tx_packets"
+	tx_bytes_now="$tx_bytes"
+	
+	if [ -f "$statfile" ]
+	then
+		rx_packets_prev="$(cut -d" " -f1 "$statfile")"
+		rx_bytes_prev="$(cut -d" " -f2 "$statfile")"
+		tx_packets_prev="$(cut -d" " -f3 "$statfile")"
+		tx_bytes_prev="$(cut -d" " -f4 "$statfile")"
+		
+		if [ "$rx_packets" -ge "$rx_packets_prev" ] \
+			&& [ "$rx_bytes" -ge "$rx_bytes_prev" ] \
+			&& [ "$tx_packets" -ge "$tx_packets_prev" ] \
+			&& [ "$tx_bytes" -ge "$tx_bytes_prev" ]
+		then
+			rx_packets=$(( $rx_packets - $rx_packets_prev))
+			rx_bytes=$(( $rx_bytes - $rx_bytes_prev ))
+			tx_packets=$(( $tx_packets - $tx_packets_prev))
+			tx_bytes=$(( $tx_bytes - $tx_bytes_prev ))
+		fi
+	fi
+	
+	echo "$rx_packets_now $rx_bytes_now $tx_packets_now $tx_bytes_now" > "$statfile"
+	rrdtool update "$2" N:"$rx_packets":"$rx_bytes":"$tx_packets":"$tx_bytes"
+else
+	exit 66 # EX_NOINPUT
+fi
