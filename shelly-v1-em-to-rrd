@@ -1,0 +1,46 @@
+#!/bin/bash
+
+# rrdtool create XXX.rrd -s 60 DS:wh:GAUGE:300:0:U DS:wh_returned:GAUGE:300:0:U DS:volts:GAUGE:300:0:U RRA:AVERAGE:0.5:1m:2y
+
+set -e
+
+if [ "$#" -ne "4" ] && [ "$#" -ne "6" ]
+then
+	echo "Usage: $0 <shelly hostname/ip> <emeter index (0/1)> <rrd file> <state file> [<username> <password>]" 1>&2
+	exit 64 # EX_USAGE
+fi
+
+if [ "$#" -gt "3" ]
+then
+	json=$(curl -s --basic -u "$5:$6" "http://$1/emeter/$2")
+else
+	json=$(curl -s "http://$1/emeter/$2")
+fi
+
+function int()
+{
+	cut -d. -f1 <<< "$1"
+}
+
+voltage=$(jq '.voltage' <<< "$json")
+wh=$(jq '.total' <<< "$json")
+wh_returned=$(jq '.total_returned' <<< "$json")
+
+wh_this_time="$wh"
+wh_returned_this_time="$wh_returned"
+
+if [ -f "$4" ]
+then
+	last_wh=$(cut -d, -f1 "$4")
+	last_wh_returned=$(cut -d, -f2 "$4")
+	
+	if [ -n "$last_wh" ] && [ "$(int "$wh")" -ge "$(int "$last_wh")" ] \
+		&& [ -n "$last_wh_returned" ] && [ "$(int "$wh_returned")" -ge "$(int "$last_wh_returned")" ]
+	then
+		wh_this_time="$(bc <<< "$wh - $last_wh")"
+		wh_returned_this_time="$(bc <<< "$wh_returned - $last_wh_returned")"
+	fi
+fi
+
+rrdtool update "$3" N:"$wh_this_time":"$wh_returned_this_time":"$voltage"
+echo "$wh,$wh_returned" > "$4"
