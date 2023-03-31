@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# rrdtool create XXX.rrd -s 60 DS:watts:GAUGE:300:0:U DS:volts:GAUGE:300:0:U RRA:AVERAGE:0.5:1m:2y
+# rrdtool create XXX.rrd -s 60 DS:watts:GAUGE:300:0:U DS:volts:GAUGE:300:0:U DS:tempC:GAUGE:300:0:U RRA:AVERAGE:0.5:1m:2y
 
 set -e
 
@@ -19,6 +19,7 @@ fi
 
 last_minute_ts=$(jq '."switch:0".aenergy.minute_ts' <<< "$json")
 voltage=$(jq '."switch:0".voltage' <<< "$json")
+tempC=$(jq '."switch:0".temperature.tC' <<< "$json")
 
 now_ts=$(jq '.sys.unixtime' <<< "$json")
 one_minute_ago_ts=$(( $now_ts - 60 ))
@@ -46,4 +47,4 @@ last_minute_w=$(bc -l <<< "($last_minute_mwh / 1000) * 60")
 
 # echo $(date --date "@$now_ts") last_minute_w = $last_minute_w voltage = $voltage
 
-rrdtool update "$2" N:"$last_minute_w":"$voltage"
+rrdtool update "$2" N:"$last_minute_w":"$voltage":"$tempC"
