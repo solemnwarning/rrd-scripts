@@ -17,9 +17,20 @@ else
 	json=$(curl -s "http://$1/rpc/Shelly.GetStatus")
 fi
 
-last_minute_ts=$(jq '."switch:0".aenergy.minute_ts' <<< "$json")
-voltage=$(jq '."switch:0".voltage' <<< "$json")
-tempC=$(jq '."switch:0".temperature.tC' <<< "$json")
+if jq -e '."switch:0"' <<< "$json" > /dev/null
+then
+	source="switch:0"
+elif jq -e '."pm1:0"' <<< "$json" > /dev/null
+then
+	source="pm1:0"
+else
+	echo "No switch:0 or pm1:0 key found in Shelly.GetStatus response (unsupported device?)" 1>&2
+	exit 1
+fi
+
+last_minute_ts=$(jq '."'"$source"'".aenergy.minute_ts' <<< "$json")
+voltage=$(jq '."'"$source"'".voltage' <<< "$json")
+tempC=$(jq '."'"$source"'".temperature.tC' <<< "$json")
 
 now_ts=$(jq '.sys.unixtime' <<< "$json")
 one_minute_ago_ts=$(( $now_ts - 60 ))
@@ -37,14 +48,20 @@ then
 	last_minute_mwh=0
 elif [ "$one_minute_ago_ts" -gt "$last_minute_ts" ]
 then
-	last_minute_mwh=$(jq '."switch:0".aenergy.by_minute[0]' <<< "$json")
+	last_minute_mwh=$(jq '."'"$source"'".aenergy.by_minute[0]' <<< "$json")
 else
-	last_minute_mwh=$(jq '."switch:0".aenergy.by_minute[1]' <<< "$json")
+	last_minute_mwh=$(jq '."'"$source"'".aenergy.by_minute[1]' <<< "$json")
 fi
 
 # Convert past minute mWh to Wh, then to W averaged over the minute
 last_minute_w=$(bc -l <<< "($last_minute_mwh / 1000) * 60")
 
-# echo $(date --date "@$now_ts") last_minute_w = $last_minute_w voltage = $voltage
+# Shelly Mini PM doesn't have a temperature sensor
+if [ "$tempC" = "null" ]
+then
+	tempC="-1"
+fi
+
+# echo $(date --date "@$now_ts") last_minute_w = $last_minute_w voltage = $voltage tempC = $tempC
 
 rrdtool update "$2" N:"$last_minute_w":"$voltage":"$tempC"
