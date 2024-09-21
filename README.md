@@ -85,3 +85,26 @@ To record the data from your crontab:
 ```
 
 **NOTE**: The password passed to this script may be leaked from the process table, so this script isn't suitable for accessing secured Shelly devices on a machine with other users or untrusted services.
+
+## shelly-ht-to-rrd
+
+Receives sensors readings from a Shelly H&T Gen 3 (or compatible) device via an MQTT broker and write them to an RRD file. This should be run from a systemd unit, init script or similar.
+
+To create the database (example):
+
+```
+rrdtool create database.rrd -s 60 \
+    DS:temperature_0_C:GAUGE:5m:0:U \
+    DS:humidity_0_rh:GAUGE:300:0:100 \
+    DS:battery_0_percent:GAUGE:300:0:100 \
+    RRA:AVERAGE:0.5:1m:1y \
+    RRA:AVERAGE:0.75:1h:10y
+```
+
+Each DS is optional, the following are recognised:
+
+* temperature_0_C - Temperature (degrees Celsius)
+* temperature_0_F - Temperature (degrees Fahrenheit)
+* humidity_0_rh - Relative humidity (percent)
+* battery_0_percent - Battery level (percent)
+* battery_0_V - Battery voltage (volts)

@@ -1,0 +1,190 @@
+#!/usr/bin/perl
+# Receive sensors readings from a Shelly H&T Gen 3 (or compatible) device via
+# an MQTT broker and write them to an RRD file.
+#
+# To create database (example):
+#
+# rrdtool create database.rrd -s 60 \
+#     DS:temperature_0_C:GAUGE:5m:0:U \
+#     DS:humidity_0_rh:GAUGE:300:0:100 \
+#     DS:battery_0_percent:GAUGE:300:0:100 \
+#     RRA:AVERAGE:0.5:1m:1y \
+#     RRA:AVERAGE:0.75:1h:10y
+#
+# Each DS is optional, the following are recognised:
+#
+# temperature_0_C   - Temperature (degrees Celsius)
+# temperature_0_F   - Temperature (degrees Fahrenheit)
+# humidity_0_rh     - Relative humidity (percent)
+# battery_0_percent - Battery level (percent)
+# battery_0_V       - Battery voltage (volts)
+
+use strict;
+use warnings;
+
+use JSON qw(decode_json);
+use Net::MQTT::Simple;
+use RRDTool::OO;
+
+my $DEFAULT_RRD_INTERVAL = 60; # 1 minute
+my $DEFAULT_TTL = 12 * 60 * 60; # 12 hours
+
+if((scalar @ARGV) != 3)
+{
+	die "Usage: $0 <broker address> <device name> <rrd file>\n";
+}
+
+my $rrd_interval = $DEFAULT_RRD_INTERVAL;
+my $ttl = $DEFAULT_TTL;
+
+my ($broker_address, $device_name, $rrd_file) = @ARGV;
+
+eval { RRDTool::OO->new(file => $rrd_file)->info(); };
+if($@)
+{
+	die "Error opening $rrd_file: $@\n";
+}
+
+my %fields = ();
+
+my $mqtt = Net::MQTT::Simple->new($broker_address);
+
+# Subscribe to all topics under the device name.
+$mqtt->subscribe("$device_name/#", sub
+{
+	my ($topic, $value, $retained) = @_;
+	
+	my $now = time();
+	
+	if($topic =~ m|^\Q$device_name\E/status/temperature:([0-9]+)$|)
+	{
+		my $id = $1;
+		my $data = eval { decode_json($value) };
+		
+		unless(defined($data)
+			&& defined($data->{tC})
+			&& defined($data->{tF}))
+		{
+			warn "Unable to parse topic $topic value";
+			return;
+		}
+		
+		# print "temperature:$id: ", $data->{tC}, "C\n";
+		
+		$fields{"temperature_${id}_C"} = {
+			value => $data->{tC},
+			last_update => $now,
+		};
+		
+		$fields{"temperature_${id}_F"} = {
+			value => $data->{tF},
+			last_update => $now,
+		};
+	}
+	elsif($topic =~ m|^\Q$device_name\E/status/humidity:([0-9]+)$|)
+	{
+		my $id = $1;
+		my $data = eval { decode_json($value) };
+		
+		unless(defined($data)
+			&& defined($data->{rh}))
+		{
+			warn "Unable to parse topic $topic value";
+			return;
+		}
+		
+		# print "humidity:$id: ", $data->{rh}, "%\n";
+		
+		$fields{"humidity_${id}_rh"} = {
+			value => $data->{rh},
+			last_update => $now,
+		};
+	}
+	elsif($topic =~ m|^\Q$device_name\E/status/devicepower:([0-9]+)$|)
+	{
+		my $id = $1;
+		my $data = eval { decode_json($value) };
+		
+		unless(defined($data)
+			&& defined($data->{battery})
+			&& defined($data->{battery}->{V})
+			&& defined($data->{battery}->{percent}))
+		{
+			warn "Unable to parse topic $topic value";
+			return;
+		}
+		
+		# print "devicepower:$1: ", $data->{battery}->{V}, "V, ", $data->{battery}->{percent}, "%\n";
+		
+		$fields{"battery_${id}_V"} = {
+			value => $data->{battery}->{V},
+			last_update => $now,
+		};
+		
+		$fields{"battery_${id}_percent"} = {
+			value => $data->{battery}->{percent},
+			last_update => $now,
+		};
+	}
+	else{
+		# use Data::Dumper;
+		# print Dumper(\@_);
+	}
+});
+
+my $run = 1;
+my $next_rrd_time = 0;
+
+while($run)
+{
+	my $now = time();
+	my $mqtt_timeout = 0;
+	
+	if($next_rrd_time <= $now)
+	{
+		# Attempt to update the RRD, fail gracefully if there is an error.
+		
+		my ($rrd, $rrd_info);
+		eval {
+			$rrd = RRDTool::OO->new(file => $rrd_file);
+			$rrd_info = $rrd->info();
+		};
+		
+		if(!$@)
+		{
+			my %values = ();
+			
+			# For each DS defined in the RRD, check if we have collected a matching
+			# value from the MQTT broker.
+			
+			foreach my $dsname(keys %{ $rrd_info->{ds} })
+			{
+				if(defined($fields{$dsname}) && ($fields{$dsname}->{last_update} + $ttl) >= $now)
+				{
+					$values{$dsname} = $fields{$dsname}->{value};
+				}
+				else{
+					$values{$dsname} = "U";
+				}
+			}
+			
+			# print "[$now] ", join(" ", map { $_, "=", $values{$_} } sort keys(%values)), "\n";
+			
+			eval {
+				$rrd->update(time => $now, values => \%values);
+			};
+		}
+		
+		if($@)
+		{
+			warn "Error updating RRD: $@\n";
+		}
+		
+		$next_rrd_time = $now + $rrd_interval;
+	}
+	else{
+		$mqtt_timeout = $next_rrd_time - $now;
+	}
+	
+	$mqtt->tick($mqtt_timeout);
+}

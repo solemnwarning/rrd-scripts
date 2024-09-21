@@ -1,0 +1,47 @@
+#!/bin/sh
+
+# PROVIDE: shelly-ht-to-rrd
+# REQUIRE: DAEMON
+# KEYWORD: shutdown
+#
+# Add the following lines to /etc/rc.conf.local or /etc/rc.conf
+# to enable this service:
+#
+# shelly_ht_to_rrd_enable (bool):      Set to YES to enable the service.
+#                                      Default: NO
+# shelly_ht_to_rrd_mqtt (string):      Set to the address of the MQTT broker.
+#                                      Default: ""
+# shelly_ht_to_rrd_device (string):    Set to the name of the Shelly device.
+#                                      Default: ""
+# shelly_ht_to_rrd_database (string):  Set to the path of the RRD file.
+#                                      Default: ""
+
+. /etc/rc.subr
+
+case $0 in
+	/etc/rc*)
+		# during boot (shutdown) $0 is /etc/rc (/etc/rc.shutdown),
+		# so get the name of the script from $_file
+		name=$_file
+		;;
+	*)
+		name=$0
+		;;
+esac
+
+name=${name##*/}
+rcvar="${name}_enable"
+
+load_rc_config "$name"
+
+eval "${rcvar}=\${${rcvar}:-'NO'}"
+eval "shelly_ht_to_rrd_mqtt=\${${name}_mqtt:-''}"
+eval "shelly_ht_to_rrd_device=\${${name}_device:-''}"
+eval "shelly_ht_to_rrd_database=\${${name}_database:-''}"
+
+pidfile="/var/run/${name}.pid"
+command="/usr/sbin/daemon"
+procname="/usr/local/bin/shelly-ht-to-rrd"
+command_args="-S -p ${pidfile} ${procname} ${shelly_ht_to_rrd_mqtt} ${shelly_ht_to_rrd_device} ${shelly_ht_to_rrd_database}"
+
+run_rc_command "$1"
