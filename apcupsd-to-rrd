@@ -1,0 +1,117 @@
+#!/bin/bash
+# Read UPS statistics from apcupsd and write them to an RRD file.
+#
+# Example rrdtool command to create database with 6 months of history:
+#
+# rrdtool create XXX.rrd -s 60 \
+#   DS:ITEMP:GAUGE:5m:0:U \
+#   DS:LOADPCT:GAUGE:5m:0:100 \
+#   RRA:AVERAGE:0.5:1m:6M
+#
+# See the rrdcreate(1) man page for more details.
+#
+# Each DS is optional, the following are supported:
+#
+# DS:BATTV:GAUGE:5m:0:U      - Battery voltage.
+# DS:BCHARGE:GAUGE:5m:0:100  - Battery charge level in percent.
+# DS:ITEMP:GAUGE:5m:0:U      - Internal temperature in degrees celsius.
+# DS:LINEV:GAUGE:5m:0:U      - Supply voltage.
+# DS:LINEFREQ:GAUGE:5m:0:U   - Supply AC frequency in Hz.
+# DS:LOADPCT:GAUGE:5m:0:100  - Output load in percent.
+# DS:LOADW:GAUGE:5m:0:U      - Output load in Watts.
+# DS:OUTPUTV:GAUGE:5m:0:U    - Output voltage.
+# DS:TIMELEFT:GAUGE:5m:0:U   - Battery runtime remaining in minutes.
+#
+# Not all UPS models support all of the above values, any DS specified in the
+# file but not supported by the UPS will be filled with "U" (undefined).
+#
+# If the UPS supports both LOADPCT and NOMPOWER, then LOADW can be computed
+# automatically, if the UPS only supports LOADPCT, then the maximum rated power
+# of the UPS can be provided on the command line to enable calculation of the
+# LOADW value.
+
+set -eo pipefail
+
+if [ "$#" -lt "1" ] || [ "$#" -gt "2" ]
+then
+	echo "Usage: $0 <rrd file> [<maximum output (Watts)>]" 1>&2
+	exit 64 # EX_USAGE
+fi
+
+# Query status from apcupsd, strip spaces from around name/value delimeter.
+status="$(apcaccess status -u | sed -e 's/ *: */:/')"
+
+val_BATTV="$( (grep '^BATTV:' <<< "$status" || true) | cut -d: -f2)"
+val_BCHARGE="$( (grep '^BCHARGE:' <<< "$status" || true) | cut -d: -f2)"
+val_ITEMP="$( (grep '^ITEMP:' <<< "$status" || true) | cut -d: -f2)"
+val_LINEV="$( (grep '^LINEV:' <<< "$status" || true) | cut -d: -f2)"
+val_LINEFREQ="$( (grep '^LINEFREQ:' <<< "$status" || true) | cut -d: -f2)"
+val_LOADPCT="$( (grep '^LOADPCT:' <<< "$status" || true) | cut -d: -f2)"
+val_OUTPUTV="$( (grep '^OUTPUTV:' <<< "$status" || true) | cut -d: -f2)"
+val_TIMELEFT="$( (grep '^TIMELEFT:' <<< "$status" || true) | cut -d: -f2)"
+
+if [ "$#" -ge "2" ]
+then
+	val_NOMPOWER="$2"
+else
+	val_NOMPOWER="$( (grep '^NOMPOWER:' <<< "$status" || true) | cut -d: -f2)"
+fi
+
+if [ -n "$val_LOADPCT" ] && [ -n "$val_NOMPOWER" ]
+then
+	# Scale NOMPOWER by LOADPCT to nearest whole Watt.
+	val_LOADW="$(bc <<< "scale=4; x=(${val_LOADPCT} / 100) * ${val_NOMPOWER}; scale=0; x / 1;")"
+else
+	val_LOADW=""
+fi
+
+data_sources=$(rrdtool info "$1" | grep '^ds\[.*\]' | sed -Ee 's/.*\[(.*)\].*/\1/' | uniq)
+values="N"
+
+for ds in $data_sources
+do
+	case "$ds" in
+		BATTV)
+			values="${values}:${val_BATTV:-U}"
+			;;
+		
+		BCHARGE)
+			values="${values}:${val_BCHARGE:-U}"
+			;;
+			
+		ITEMP)
+			values="${values}:${val_ITEMP:-U}"
+			;;
+			
+		LINEV)
+			values="${values}:${val_LINEV:-U}"
+			;;
+			
+		LINEFREQ)
+			values="${values}:${val_LINEFREQ:-U}"
+			;;
+			
+		LOADPCT)
+			values="${values}:${val_LOADPCT:-U}"
+			;;
+			
+		LOADW)
+			values="${values}:${val_LOADW:-U}"
+			;;
+			
+		OUTPUTV)
+			values="${values}:${val_OUTPUTV:-U}"
+			;;
+			
+		TIMELEFT)
+			values="${values}:${val_TIMELEFT:-U}"
+			;;
+			
+		*)
+			echo "Unrecognised DS name in RRD file: ${ds}" 1>&2
+			exit 65 # EX_DATAERR
+		
+	esac
+done
+
+rrdtool update "$1" "$values"
